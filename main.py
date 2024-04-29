@@ -60,12 +60,13 @@ def download_worker(queue, images_folder):
         download_image(url, images_folder)
         queue.task_done()
 
-# Main function to orchestrate the download and processing of achievement data
-def main(appid):
-    # Retrieve achievement data from the Steam API
+def fetch_achievement_data(appid, output_queue):
     achievement_data = get_achievement_data(appid)
-    # Initialize list to store processed achievement data
-    output_data = []
+    output_queue.put((appid, achievement_data))
+
+def main(appids):
+    # Initialize queue for storing fetched achievement data
+    output_queue = Queue()
     # Folder to store downloaded images
     images_folder = "images"
     # Ensure images folder exists, create if not
@@ -76,43 +77,69 @@ def main(appid):
     # Number of worker threads for downloading images
     num_threads = 5
     threads = []
-    # Create and start worker threads
+    # Create and start worker threads for downloading images
     for _ in range(num_threads):
         t = threading.Thread(target=download_worker, args=(image_queue, images_folder))
         t.start()
         threads.append(t)
-    # Add image download tasks to the queue
-    for achievement in achievement_data:
-        icon_url = achievement['icon']
-        icongray_url = achievement['icongray']
-        image_queue.put((icon_url, images_folder))
-        image_queue.put((icongray_url, images_folder))
-    # Wait for all tasks in the queue to be processed
+
+    # Create and start worker threads for fetching achievement data
+    data_fetch_threads = []
+    for appid in appids:
+        t = threading.Thread(target=fetch_achievement_data, args=(appid, output_queue))
+        t.start()
+        data_fetch_threads.append(t)
+
+    # Wait for all achievement data fetch threads to complete
+    for t in data_fetch_threads:
+        t.join()
+
+    # Retrieve fetched achievement data from the output queue
+    appid_data_map = {}
+    while not output_queue.empty():
+        appid, achievement_data = output_queue.get()
+        appid_data_map[appid] = achievement_data
+
+    # Process achievement data and download images
+    output_data = []
+    for appid, achievement_data in appid_data_map.items():
+        for achievement in achievement_data:
+            icon_url = achievement['icon']
+            icongray_url = achievement['icongray']
+            image_queue.put((icon_url, images_folder))
+            image_queue.put((icongray_url, images_folder))
+
+    # Wait for all image download tasks to complete
     image_queue.join()
+
     # Add None to the queue for each thread to signal completion
     for _ in range(num_threads):
         image_queue.put(None)
-    # Wait for all threads to complete
+
+    # Wait for all image download threads to complete
     for t in threads:
         t.join()
+
     print("\nProcessing achievement data...")
     # Process achievement data and save to output list
-    for achievement in achievement_data:
-        icon_url = achievement['icon']
-        icongray_url = achievement['icongray']
-        if 'description' in achievement:
-            description = achievement['description']
-        else:
-            description = ""
-        achievement_info = {
-            "description": description,
-            "displayName": achievement['displayName'],
-            "hidden": achievement.get('hidden', 0),
-            "icon": f"{images_folder}/{icon_url.split('/')[-1]}",
-            "icongray": f"{images_folder}/{icongray_url.split('/')[-1]}",
-            "name": achievement['name']
-        }
-        output_data.append(achievement_info)
+    for appid, achievement_data in appid_data_map.items():
+        for achievement in achievement_data:
+            icon_url = achievement['icon']
+            icongray_url = achievement['icongray']
+            if 'description' in achievement:
+                description = achievement['description']
+            else:
+                description = ""
+            achievement_info = {
+                "description": description,
+                "displayName": achievement['displayName'],
+                "hidden": achievement.get('hidden', 0),
+                "icon": f"{images_folder}/{icon_url.split('/')[-1]}",
+                "icongray": f"{images_folder}/{icongray_url.split('/')[-1]}",
+                "name": achievement['name']
+            }
+            output_data.append(achievement_info)
+
     # Save processed achievement data to JSON file
     with open('achievements.json', 'w', encoding='utf-8') as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
@@ -121,10 +148,10 @@ def main(appid):
 # Entry point of the script
 if __name__ == "__main__":
     # Check if the correct number of command line arguments is provided
-    if len(sys.argv) != 2:
-        print("Usage: python main.py <appid>")
+    if len(sys.argv) < 2:
+        print("Usage: python main.py <appid1> <appid2> ...")
         sys.exit(1)
-    # Get the appid from command line argument
-    appid = sys.argv[1]
-    # Call the main function with the provided appid
-    main(appid)
+    # Get the appids from command line arguments
+    appids = sys.argv[1:]
+    # Call the main function with the provided appids
+    main(appids)
